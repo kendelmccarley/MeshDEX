@@ -7,6 +7,8 @@ MeshDEX is a lightweight, fullscreen terminal UI framework for the Raspberry Pi,
 
 Inspired by [eDEX-UI](https://github.com/GitSquared/edex-ui), MeshDEX delivers the same sci-fi terminal aesthetic at a fraction of the resource cost. Instead of Electron + Node.js (~400MB RAM), it runs on **pure Python + pygame/SDL2** (~30MB RAM).
 
+![MeshDEX running on Raspberry Pi with MeshTTY node list visible in the terminal, system stats in the left panel, rotating globe and weather in the right panel, and keyboard visualizer at the bottom](screenshot.png)
+
 ---
 
 ## Layout
