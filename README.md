@@ -13,25 +13,6 @@ Inspired by [eDEX-UI](https://github.com/GitSquared/edex-ui), MeshDEX delivers t
 
 ## Layout
 
-```
-┌──────────────┬──────────────────────────────────────────────┬──────────────┐
-│ PANEL SYSTEM │ TERMINAL    [TAB1] [TAB2] [TAB3] [TAB4] ...  │ PANEL NETWRK │
-│              │                                               │              │
-│  19:43:31    │                                               │ Network      │
-│              │                                               │ Status       │
-│  CPU graphs  │         80×24 PTY terminal                    │              │
-│  Memory dots │         (MeshTTY or bash)                     │  Globe       │
-│  Processes   │                                               │              │
-│              │                                               │  Weather     │
-│              │                                               │  Sunrise/set │
-│              │                                               │  Net traffic │
-├──────────────┴──────────────────────────┐                    │              │
-│ FILESYSTEM        /home/digits          │                    │              │
-│ [folder] [folder] [file] ...            │                    │              │
-└─────────────────────────────────────────┴────────────────────┴──────────────┘
-                    [ A P P L E   K E Y B O A R D   V I S U A L I Z E R     ]
-```
-
 **Left panel:** Large clock, date/uptime, system info grid, dual CPU waveforms, temperature/frequency/task count, memory dot grid, swap bar, top processes list
 
 **Center:** Five independent 80×24 PTY terminals with full VT100/xterm emulation powered by [pyte](https://github.com/selectel/pyte). Switch between tabs with Alt+T or by clicking tab labels. Tab 0 auto-launches MeshTTY if installed.
