@@ -7,7 +7,7 @@ Layout matches reference: left panel | terminal | right panel
 """
 
 import pygame
-import os, pty, select, signal, socket, math, time, threading, collections
+import os, pty, select, signal, socket, math, time, threading, collections, configparser
 import psutil
 from datetime import datetime
 from pathlib import Path
@@ -676,13 +676,17 @@ def main():
     for t in terms:
         t.start()
 
-    # Auto-launch MeshTTY in tab 0 if available
-    meshtty_launch = os.path.expanduser('~/MeshTTY/launch-pi.sh')
-    if os.path.exists(meshtty_launch):
-        tab_names[0] = 'MESHTTY'
+    # Auto-launch app in tab 0 if configured
+    cfg = configparser.ConfigParser()
+    cfg.read(os.path.expanduser('~/MeshDEX/config.ini'))
+    autostart_cmd  = cfg.get('autostart', 'command',  fallback='').strip()
+    autostart_name = cfg.get('autostart', 'tab_name', fallback='').strip()
+    if autostart_cmd:
+        if autostart_name:
+            tab_names[0] = autostart_name
         def _autolaunch():
             time.sleep(1.5)
-            terms[0].write('cd ~/MeshTTY && bash launch-pi.sh\n')
+            terms[0].write(autostart_cmd + '\r')
         threading.Thread(target=_autolaunch, daemon=True).start()
 
     # Convenience reference to active terminal
