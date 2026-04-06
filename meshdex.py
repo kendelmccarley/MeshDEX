@@ -105,6 +105,9 @@ def draw_wave(surf, rect, data, color, scale=None):
 # ─── STATS ───────────────────────────────────────────────────────────────────
 class Stats:
     HIST=60
+    # Globe location — used for weather fetch too
+    LAT=32.2; LON=-110.9; TZ='America/Phoenix'
+
     def __init__(self):
         self.cpu=0.0; self.temp=0.0; self.freq=0
         self.mem_pct=0.0; self.mem_used=0; self.mem_total=0
@@ -117,15 +120,59 @@ class Stats:
         self.net_up=collections.deque([0]*self.HIST,self.HIST)
         self.net_dn=collections.deque([0]*self.HIST,self.HIST)
         self._ps=0; self._pr=0
+        # Weather data
+        self.wx_temp=None; self.wx_wind_spd=None
+        self.wx_wind_dir=None; self.wx_wind_dir_str='--'
+        self.wx_sunrise='--:--'; self.wx_sunset='--:--'
+        self.wx_updated=0
         self._lock=threading.Lock(); self._run=True
         psutil.cpu_percent()
         threading.Thread(target=self._loop,daemon=True).start()
+        threading.Thread(target=self._wx_loop,daemon=True).start()
 
     def _loop(self):
         while self._run:
             try: self._update()
             except: pass
             time.sleep(3)
+
+    def _wx_loop(self):
+        """Fetch weather from Open-Meteo every 10 minutes"""
+        while self._run:
+            try: self._fetch_weather()
+            except: pass
+            time.sleep(600)
+
+    def _fetch_weather(self):
+        import urllib.request, json
+        url=(f'https://api.open-meteo.com/v1/forecast'
+             f'?latitude={self.LAT}&longitude={self.LON}'
+             f'&current=temperature_2m,wind_speed_10m,wind_direction_10m'
+             f'&daily=sunrise,sunset'
+             f'&temperature_unit=fahrenheit&wind_speed_unit=mph'
+             f'&timezone={self.TZ}&forecast_days=1')
+        with urllib.request.urlopen(url,timeout=10) as r:
+            d=json.loads(r.read())
+        cur=d.get('current',{})
+        daily=d.get('daily',{})
+        temp=cur.get('temperature_2m')
+        wspd=cur.get('wind_speed_10m')
+        wdir=cur.get('wind_direction_10m')
+        # Convert degrees to compass
+        dirs=['N','NNE','NE','ENE','E','ESE','SE','SSE',
+              'S','SSW','SW','WSW','W','WNW','NW','NNW']
+        compass=dirs[int((wdir+11.25)/22.5)%16] if wdir is not None else '--'
+        # Parse sunrise/sunset HH:MM from ISO string
+        def hhmm(s):
+            try: return s[11:16]
+            except: return '--:--'
+        sunrise=hhmm(daily.get('sunrise',[''])[0])
+        sunset =hhmm(daily.get('sunset', [''])[0])
+        with self._lock:
+            self.wx_temp=temp; self.wx_wind_spd=wspd
+            self.wx_wind_dir=wdir; self.wx_wind_dir_str=compass
+            self.wx_sunrise=sunrise; self.wx_sunset=sunset
+            self.wx_updated=int(time.time())
 
     def _update(self):
         cpu=psutil.cpu_percent()
@@ -397,7 +444,7 @@ class Globe:
         # Iceland
         [(63,-20),(65,-14),(66,-14),(66,-18),(65,-22),(64,-24),(63,-22),(63,-20)],
     ]
-    def __init__(self): self.rot=0.0; self.lat=32.2; self.lon=-110.9
+    def __init__(self): self.rot=0.0; self.lat=Stats.LAT; self.lon=Stats.LON
 
     def proj(self,lat,lon,cx,cy,r):
         phi=math.radians(90-lat); theta=math.radians(lon+self.rot)
@@ -405,7 +452,7 @@ class Globe:
         z=r*math.sin(phi)*math.sin(theta)
         return int(cx+x),int(cy-y),z>0
 
-    def update(self): self.rot=(self.rot+0.5)%360
+    def update(self): self.rot=(self.rot-0.5)%360
 
     def draw(self,surf,cx,cy,r):
         pygame.draw.circle(surf,(4,12,18),(cx,cy),r)
@@ -444,63 +491,147 @@ class Globe:
             pygame.draw.circle(surf,CWRN,(x,y),2)
 
 # ─── KEYBOARD ────────────────────────────────────────────────────────────────
+# Laptop keyboard layout matching standard diagram
+# Each entry: (primary_label, shift_label, width_units, pygame_key)
+# All rows total 15 units wide except fn row (14) and bottom row (15)
 ROWS=[
-    [('ESC',1.5),('F1',1),('F2',1),('F3',1),('F4',1),('F5',1),('F6',1),
-     ('F7',1),('F8',1),('F9',1),('F10',1),('F11',1),('F12',1),('BACK',2)],
-    [('`',1),('1',1),('2',1),('3',1),('4',1),('5',1),('6',1),('7',1),
-     ('8',1),('9',1),('0',1),('-',1),('=',1),('BACK',0)],
-    [('TAB',1.5),('Q',1),('W',1),('E',1),('R',1),('T',1),('Y',1),('U',1),
-     ('I',1),('O',1),('P',1),('[',1),(']',1),('\\',1.5)],
-    [('CAPS',1.75),('A',1),('S',1),('D',1),('F',1),('G',1),('H',1),('J',1),
-     ('K',1),('L',1),(';',1),("'",1),('ENTER',2.25)],
-    [('SHIFT',2.25),('Z',1),('X',1),('C',1),('V',1),('B',1),('N',1),('M',1),
-     (',',1),('.',1),('/',1),('SHIFT',2.75)],
-    [('CTRL',1.5),('FN',1),(' ',6.25),('ALT',1.25),('CTRL',1.5),
-     ('←',1),('↑',1),('↓',1),('→',1)],
+    # Row 0 — Function row, shorter height, all 1u
+    [('esc','',1,pygame.K_ESCAPE),
+     ('F1','',1,pygame.K_F1),('F2','',1,pygame.K_F2),
+     ('F3','',1,pygame.K_F3),('F4','',1,pygame.K_F4),
+     ('F5','',1,pygame.K_F5),('F6','',1,pygame.K_F6),
+     ('F7','',1,pygame.K_F7),('F8','',1,pygame.K_F8),
+     ('F9','',1,pygame.K_F9),('F10','',1,pygame.K_F10),
+     ('F11','',1,pygame.K_F11),('F12','',1,pygame.K_F12),
+     ('del','',1,pygame.K_DELETE)],
+    # Row 1 — Number row, backspace=2u
+    [('`','~',1,pygame.K_BACKQUOTE),
+     ('1','!',1,pygame.K_1),('2','@',1,pygame.K_2),
+     ('3','#',1,pygame.K_3),('4','$',1,pygame.K_4),
+     ('5','%',1,pygame.K_5),('6','^',1,pygame.K_6),
+     ('7','&',1,pygame.K_7),('8','*',1,pygame.K_8),
+     ('9','(',1,pygame.K_9),('0',')',1,pygame.K_0),
+     ('-','_',1,pygame.K_MINUS),('=','+',1,pygame.K_EQUALS),
+     ('delete','',2,pygame.K_BACKSPACE)],
+    # Row 2 — QWERTY, tab=1.5u, backslash=1.5u
+    [('tab','',1.5,pygame.K_TAB),
+     ('Q','',1,pygame.K_q),('W','',1,pygame.K_w),
+     ('E','',1,pygame.K_e),('R','',1,pygame.K_r),
+     ('T','',1,pygame.K_t),('Y','',1,pygame.K_y),
+     ('U','',1,pygame.K_u),('I','',1,pygame.K_i),
+     ('O','',1,pygame.K_o),('P','',1,pygame.K_p),
+     ('[','{',1,pygame.K_LEFTBRACKET),(']','}',1,pygame.K_RIGHTBRACKET),
+     ('\\','|',1.5,pygame.K_BACKSLASH)],
+    # Row 3 — Home row, caps=1.75u, return=2.25u
+    [('caps','',1.75,pygame.K_CAPSLOCK),
+     ('A','',1,pygame.K_a),('S','',1,pygame.K_s),
+     ('D','',1,pygame.K_d),('F','',1,pygame.K_f),
+     ('G','',1,pygame.K_g),('H','',1,pygame.K_h),
+     ('J','',1,pygame.K_j),('K','',1,pygame.K_k),
+     ('L','',1,pygame.K_l),(';',':',1,pygame.K_SEMICOLON),
+     ("'",'"',1,pygame.K_QUOTE),
+     ('return','',2.25,pygame.K_RETURN)],
+    # Row 4 — Shift row: lshift=2.25u, rshift=1.75u, ↑=1u (right of rshift)
+    [('shift','',2.25,pygame.K_LSHIFT),
+     ('Z','',1,pygame.K_z),('X','',1,pygame.K_x),
+     ('C','',1,pygame.K_c),('V','',1,pygame.K_v),
+     ('B','',1,pygame.K_b),('N','',1,pygame.K_n),
+     ('M','',1,pygame.K_m),(',','<',1,pygame.K_COMMA),
+     ('.','> ',1,pygame.K_PERIOD),('/','?',1,pygame.K_SLASH),
+     ('shift','',1.75,pygame.K_RSHIFT),
+     ('↑','',1,pygame.K_UP)],
+    # Row 5 — Bottom row: fn ctrl opt cmd [space] cmd opt ← ↓ →
+    [('fn','',1.25,None),('ctrl','',1.25,pygame.K_LCTRL),
+     ('opt','',1.25,pygame.K_LALT),('⌘','',1.5,pygame.K_LGUI),
+     ('','',5.5,pygame.K_SPACE),
+     ('⌘','',1.25,pygame.K_RGUI),('opt','',1,pygame.K_RALT),
+     ('←','',1,pygame.K_LEFT),('↓','',1,pygame.K_DOWN),('→','',1,pygame.K_RIGHT)],
 ]
-KMAP={'ESC':pygame.K_ESCAPE,'BACK':pygame.K_BACKSPACE,'TAB':pygame.K_TAB,
-      'CAPS':pygame.K_CAPSLOCK,'ENTER':pygame.K_RETURN,'SHIFT':pygame.K_LSHIFT,
-      'CTRL':pygame.K_LCTRL,'ALT':pygame.K_LALT,' ':pygame.K_SPACE,
-      '←':pygame.K_LEFT,'→':pygame.K_RIGHT,'↑':pygame.K_UP,'↓':pygame.K_DOWN,
-      '`':pygame.K_BACKQUOTE,'-':pygame.K_MINUS,'=':pygame.K_EQUALS,
-      '[':pygame.K_LEFTBRACKET,']':pygame.K_RIGHTBRACKET,'\\':pygame.K_BACKSLASH,
-      ';':pygame.K_SEMICOLON,"'":pygame.K_QUOTE,',':pygame.K_COMMA,
-      '.':pygame.K_PERIOD,'/':pygame.K_SLASH}
-for c in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ':
-    KMAP[c]=getattr(pygame,f'K_{c.lower()}')
-for c in '0123456789':
-    KMAP[c]=getattr(pygame,f'K_{c}')
-for i in range(1,13):
-    KMAP[f'F{i}']=getattr(pygame,f'K_F{i}')
+
+# Font for keyboard rendering
+_kb_font_main = None   # set in Keyboard.__init__
+_kb_font_shift = None
+_kb_font_fn = None
 
 class Keyboard:
     def __init__(self,x,y,w,h):
+        global _kb_font_main, _kb_font_shift, _kb_font_fn
         self.active=set(); self.keys=[]
-        unit=w/15.5; kh=28; ky=y+6
-        total_kb_h = len(ROWS)*(kh+2)
-        # Center rows vertically within the panel
-        ky = y + (h - total_kb_h) // 2
-        for row in ROWS:
-            kx=x+3
-            for label,width in row:
-                if width==0: continue
-                kw=unit*width-2
-                rect=pygame.Rect(int(kx),int(ky),int(kw),int(kh))
-                self.keys.append((rect,label,KMAP.get(label)))
-                kx+=unit*width
-            ky+=kh+2
+        self.x=x; self.y=y; self.w=w; self.h=h
+
+        # Font sizes for key labels
+        _kb_font_main  = F(11, bold=True)   # primary char — large, bold
+        _kb_font_shift = F(8)               # shift char — small, top-left
+        _kb_font_fn    = F(9)               # function key labels
+
+        # Row heights — fn row is shorter
+        fn_h   = int(h * 0.13)   # ESC/F-key row
+        main_h = int((h - fn_h - 14) / 5)  # remaining 5 rows
+        gap    = 3
+
+        total_h = fn_h + 5*main_h + 6*gap
+        start_y = y + (h - total_h) // 2
+
+        unit = w / 15.0  # all main rows are 15 units wide
+        row_heights = [fn_h] + [main_h]*5
+
+        ky = start_y
+        for row_i, (row, rh) in enumerate(zip(ROWS, row_heights)):
+            kx = x + 4
+            is_fn_row = (row_i == 0)
+            for label,shift,width,pk in row:
+                kw = unit * width - gap
+                rect = pygame.Rect(int(kx), int(ky), max(1,int(kw)), int(rh))
+                self.keys.append((rect, label, shift, pk, is_fn_row))
+                kx += unit * width
+            ky += rh + gap
 
     def press(self,k): self.active.add(k)
     def release(self,k): self.active.discard(k)
 
     def draw(self,surf):
-        for rect,label,pk in self.keys:
-            on=pk in self.active if pk else False
-            bg=C if on else BG2; fg=BG if on else CDM
-            pygame.draw.rect(surf,bg,rect,border_radius=2)
-            if not on: pygame.draw.rect(surf,CBRD,rect,1,border_radius=2)
-            s=f8.render(label,True,fg)
-            surf.blit(s,(rect.centerx-s.get_width()//2,rect.centery-s.get_height()//2))
+        for rect,label,shift,pk,is_fn in self.keys:
+            on = pk in self.active if pk else False
+
+            # Colors
+            if on:
+                bg = C; border = C; fg_main = BG; fg_shift = BG
+            else:
+                bg = BG2; border = CBRD; fg_main = C; fg_shift = CDM
+
+            # Key background with rounded corners
+            pygame.draw.rect(surf, bg, rect, border_radius=3)
+
+            # Border glow — brighter on sides/bottom for depth effect
+            pygame.draw.rect(surf, border, rect, 1, border_radius=3)
+            if not on:
+                # Subtle highlight on top edge
+                pygame.draw.line(surf, (100,160,160),
+                                 (rect.x+3, rect.y+1), (rect.right-3, rect.y+1))
+                # Darker shadow on bottom edge
+                pygame.draw.line(surf, (20,40,50),
+                                 (rect.x+3, rect.bottom-2), (rect.right-3, rect.bottom-2))
+
+            # Draw shift character — top left, small
+            if shift and not is_fn:
+                ss = _kb_font_shift.render(shift, True, fg_shift)
+                surf.blit(ss, (rect.x+4, rect.y+2))
+
+            # Draw primary label — centered
+            font = _kb_font_fn if is_fn or len(label)>2 else _kb_font_main
+            if label == '':
+                # Spacebar — draw a thin line instead
+                sy = rect.centery
+                pygame.draw.line(surf, border,
+                                 (rect.x+8, sy), (rect.right-8, sy), 1)
+            else:
+                ls = font.render(label, True, fg_main)
+                lx = rect.centerx - ls.get_width()//2
+                ly = rect.centery - ls.get_height()//2
+                # If has shift char, nudge label down slightly
+                if shift and not is_fn:
+                    ly += 3
+                surf.blit(ls, (lx, ly))
 
 # ─── MAIN ────────────────────────────────────────────────────────────────────
 def main():
@@ -534,78 +665,116 @@ def main():
     print(f"Terminal geometry: font={term_font_size}pt cw={term_char_w} ch={term_char_h}")
     print(f"  pane={term_pane_w}x{term_pane_h} content={term_char_w*TERM_COLS}x{term_char_h*TERM_ROWS}")
     print(f"  offset=({term_offset_x},{term_offset_y}) right_margin={term_pane_w - term_char_w*TERM_COLS - term_offset_x}")
-    stats=Stats(); term=Terminal(cols=TERM_COLS, rows=TERM_ROWS); term.start()
-    fs=FS(); globe=Globe()
-    kb_x=W-KB_W  # keyboard flush to right edge of screen
-    kb=Keyboard(kb_x, H-FS_H, KB_W, FS_H)
+    stats=Stats()
 
-    # Auto-launch MeshTTY if available
-    # Auto-launch MeshTTY disabled pending terminal width debug
-    # meshtty_launch = os.path.expanduser('~/MeshTTY/launch-pi.sh')
-    # if os.path.exists(meshtty_launch):
-    #     def _autolaunch():
-    #         time.sleep(1.5)
-    #         term.write('cd ~/MeshTTY && bash launch-pi.sh\n')
-    #     threading.Thread(target=_autolaunch, daemon=True).start()
+    # 5 independent terminal instances
+    NUM_TABS = 5
+    terms = [Terminal(cols=TERM_COLS, rows=TERM_ROWS) for _ in range(NUM_TABS)]
+    tab_names = ['MAIN SHELL', 'EMPTY', 'EMPTY', 'EMPTY', 'EMPTY']
+    tab_rects = []  # populated during rendering for click detection
+    active_tab = 0
+    for t in terms:
+        t.start()
+
+    # Auto-launch MeshTTY in tab 0 if available
+    meshtty_launch = os.path.expanduser('~/MeshTTY/launch-pi.sh')
+    if os.path.exists(meshtty_launch):
+        tab_names[0] = 'MESHTTY'
+        def _autolaunch():
+            time.sleep(1.5)
+            terms[0].write('cd ~/MeshTTY && bash launch-pi.sh\n')
+        threading.Thread(target=_autolaunch, daemon=True).start()
+
+    # Convenience reference to active terminal
+    def term():
+        return terms[active_tab]
+
+    fs=FS(); globe=Globe()
+    kb_x=W-KB_W
+    kb=Keyboard(kb_x, H-FS_H, KB_W, FS_H)
 
     scan=pygame.Surface((W,H),pygame.SRCALPHA)
     for yy in range(0,H,3):
         pygame.draw.line(scan,(0,0,0,12),(0,yy),(W,yy))
 
     input_buf=''; frame=0; running=True
+    tab_rects=[]  # populated each frame for click detection
 
     while running:
         for ev in pygame.event.get():
             if ev.type==pygame.QUIT: running=False
+            elif ev.type==pygame.MOUSEBUTTONDOWN:
+                if ev.button==1:
+                    mx,my=ev.pos
+                    # Click on tab bar
+                    if my < HDR_H:
+                        for i,(rect,name) in enumerate(tab_rects):
+                            if rect.collidepoint(mx,my):
+                                active_tab=i
+                                input_buf=''
+                                break
+                    # Filesystem scroll
+                    elif my>H-FS_H and mx<W-KB_W:
+                        pass
             elif ev.type==pygame.KEYDOWN:
                 kb.press(ev.key)
                 if ev.key==pygame.K_RETURN:
-                    term.write('\n')
+                    term().write('\n')
                     input_buf=''
                 elif ev.key==pygame.K_q and (ev.mod&(pygame.KMOD_ALT|pygame.KMOD_LALT|pygame.KMOD_RALT)):
                     running=False
+                elif ev.key==pygame.K_t and (ev.mod&(pygame.KMOD_ALT|pygame.KMOD_LALT|pygame.KMOD_RALT)):
+                    # Alt+T cycles to next tab
+                    active_tab=(active_tab+1)%NUM_TABS
+                    input_buf=''
+                elif ev.key==pygame.K_s and (ev.mod&(pygame.KMOD_ALT|pygame.KMOD_LALT|pygame.KMOD_RALT)):
+                    ts=datetime.now().strftime('%Y%m%d_%H%M%S')
+                    path=os.path.expanduser(f'~/meshdex_screenshot_{ts}.png')
+                    pygame.image.save(screen, path)
+                    print(f'Screenshot saved: {path}')
+                    pygame.time.wait(1000)
+                    pygame.event.clear()
                 elif ev.key==pygame.K_BACKSPACE:
                     if input_buf: input_buf=input_buf[:-1]
-                    term.write('\x7f')
+                    term().write('\x7f')
                 elif ev.key==pygame.K_TAB:
-                    if ev.mod&pygame.KMOD_SHIFT: term.write('\x1b[Z')
-                    else: term.write('\t')
-                elif ev.key==pygame.K_ESCAPE: term.write('\x1b')
-                elif ev.key==pygame.K_UP: term.write('\x1b[A')
-                elif ev.key==pygame.K_DOWN: term.write('\x1b[B')
-                elif ev.key==pygame.K_LEFT: term.write('\x1b[D')
-                elif ev.key==pygame.K_RIGHT: term.write('\x1b[C')
-                elif ev.key==pygame.K_PAGEUP: term.write('\x1b[5~')
-                elif ev.key==pygame.K_PAGEDOWN: term.write('\x1b[6~')
-                elif ev.key==pygame.K_HOME: term.write('\x1b[H')
-                elif ev.key==pygame.K_END: term.write('\x1b[F')
-                elif ev.key==pygame.K_DELETE: term.write('\x1b[3~')
-                elif ev.key==pygame.K_F1: term.write('\x1bOP')
-                elif ev.key==pygame.K_F2: term.write('\x1bOQ')
-                elif ev.key==pygame.K_F3: term.write('\x1bOR')
-                elif ev.key==pygame.K_F4: term.write('\x1bOS')
-                elif ev.key==pygame.K_F5: term.write('\x1b[15~')
-                elif ev.key==pygame.K_F6: term.write('\x1b[17~')
-                elif ev.key==pygame.K_F7: term.write('\x1b[18~')
-                elif ev.key==pygame.K_F8: term.write('\x1b[19~')
-                elif ev.key==pygame.K_F9: term.write('\x1b[20~')
-                elif ev.key==pygame.K_F10: term.write('\x1b[21~')
-                elif ev.key==pygame.K_F11: term.write('\x1b[23~')
-                elif ev.key==pygame.K_F12: term.write('\x1b[24~')
+                    if ev.mod&pygame.KMOD_SHIFT: term().write('\x1b[Z')
+                    else: term().write('\t')
+                elif ev.key==pygame.K_ESCAPE: term().write('\x1b')
+                elif ev.key==pygame.K_UP: term().write('\x1b[A')
+                elif ev.key==pygame.K_DOWN: term().write('\x1b[B')
+                elif ev.key==pygame.K_LEFT: term().write('\x1b[D')
+                elif ev.key==pygame.K_RIGHT: term().write('\x1b[C')
+                elif ev.key==pygame.K_PAGEUP: term().write('\x1b[5~')
+                elif ev.key==pygame.K_PAGEDOWN: term().write('\x1b[6~')
+                elif ev.key==pygame.K_HOME: term().write('\x1b[H')
+                elif ev.key==pygame.K_END: term().write('\x1b[F')
+                elif ev.key==pygame.K_DELETE: term().write('\x1b[3~')
+                elif ev.key==pygame.K_F1: term().write('\x1bOP')
+                elif ev.key==pygame.K_F2: term().write('\x1bOQ')
+                elif ev.key==pygame.K_F3: term().write('\x1bOR')
+                elif ev.key==pygame.K_F4: term().write('\x1bOS')
+                elif ev.key==pygame.K_F5: term().write('\x1b[15~')
+                elif ev.key==pygame.K_F6: term().write('\x1b[17~')
+                elif ev.key==pygame.K_F7: term().write('\x1b[18~')
+                elif ev.key==pygame.K_F8: term().write('\x1b[19~')
+                elif ev.key==pygame.K_F9: term().write('\x1b[20~')
+                elif ev.key==pygame.K_F10: term().write('\x1b[21~')
+                elif ev.key==pygame.K_F11: term().write('\x1b[23~')
+                elif ev.key==pygame.K_F12: term().write('\x1b[24~')
                 elif ev.mod&pygame.KMOD_CTRL:
-                    # Send all Ctrl+letter as raw control codes
                     if pygame.K_a<=ev.key<=pygame.K_z:
-                        term.write(chr(ev.key-pygame.K_a+1))
-                    elif ev.key==pygame.K_LEFTBRACKET: term.write('\x1b')
-                    elif ev.key==pygame.K_BACKSLASH: term.write('\x1c')
-                    elif ev.key==pygame.K_RIGHTBRACKET: term.write('\x1d')
+                        term().write(chr(ev.key-pygame.K_a+1))
+                    elif ev.key==pygame.K_LEFTBRACKET: term().write('\x1b')
+                    elif ev.key==pygame.K_BACKSLASH: term().write('\x1c')
+                    elif ev.key==pygame.K_RIGHTBRACKET: term().write('\x1d')
                 elif ev.unicode and ord(ev.unicode)>=32:
                     input_buf+=ev.unicode
-                    term.write(ev.unicode)
+                    term().write(ev.unicode)
             elif ev.type==pygame.KEYUP: kb.release(ev.key)
             elif ev.type==pygame.MOUSEWHEEL:
                 mx,my=pygame.mouse.get_pos()
-                if my>H-FS_H and mx>LEFT_W:
+                if my>H-FS_H and mx<W-KB_W:
                     fs.scroll=max(0,fs.scroll-ev.y)
 
         frame+=1; globe.update()
@@ -726,20 +895,22 @@ def main():
         blit(screen,"TERMINAL",f9b,C,tx+8,5)
 
         # Tabs
-        tabs=["MAIN SHELL","EMPTY","EMPTY","EMPTY","EMPTY"]
+        tab_rects=[]
         tab_x=tx+80
-        for i,tab in enumerate(tabs):
+        for i,tab in enumerate(tab_names):
             tw2=f9.size(tab)[0]+20
             tab_rect=pygame.Rect(tab_x,0,tw2,HDR_H)
-            if i==0:
+            tab_rects.append((tab_rect, tab))
+            if i==active_tab:
                 pygame.draw.rect(screen,BG3,tab_rect)
                 hrule(screen,tab_x,HDR_H,tw2,C)
                 blit(screen,tab,f9b,C,tab_x+10,5)
             else:
+                pygame.draw.rect(screen,BG2,tab_rect)
                 blit(screen,tab,f9,CDM,tab_x+10,5)
             vrule(screen,tab_x+tw2,0,HDR_H)
             tab_x+=tw2
-        blit(screen,"MAIN SHELL",f9b,CDM,tx+tw-8,5,'tr')
+        blit(screen,tab_names[active_tab],f9b,CDM,tx+tw-8,5,'tr')
 
         # Terminal output - centered in pane with margins
         term_start_x = tx + 2 + term_offset_x
@@ -749,7 +920,7 @@ def main():
         term_inner = pygame.Rect(tx+2, HDR_H+2, tw-4, tbot-HDR_H-4)
         term_content = pygame.Rect(term_start_x, term_start_y, exact_w, exact_h)
         pygame.draw.rect(screen, BG3, term_inner)
-        scr,cur_x,cur_y=term.get_screen()
+        scr,cur_x,cur_y=term().get_screen()
         blink_on=(frame//6)%2==0
         for row_i,row in enumerate(scr):
             ly3=term_start_y+row_i*term_char_h
@@ -856,6 +1027,40 @@ def main():
         globe.draw(screen,gcx,gcy,gr)
         ry+=gr*2+12; hrule(screen,rx,ry,rw); ry+=6
 
+        # Weather
+        blit(screen,"WEATHER",f8,CDM,rx+8,ry)
+        wx_age=int(time.time())-s.get('wx_updated',0)
+        age_str=f"~{wx_age//60}m ago" if wx_age<3600 and s.get('wx_updated') else "fetching..."
+        blit(screen,age_str,f7,CDM,rx+rw-8,ry,'tr')
+        ry+=14
+
+        wx_temp=s.get('wx_temp')
+        wx_spd=s.get('wx_wind_spd')
+        wx_dir=s.get('wx_wind_dir_str','--')
+        wx_rise=s.get('wx_sunrise','--:--')
+        wx_set=s.get('wx_sunset','--:--')
+
+        # Temperature — large
+        temp_str=f"{wx_temp:.0f}°F" if wx_temp is not None else '--°F'
+        blit(screen,temp_str,f9b,C,rx+rw//2,ry,'tc')
+        ry+=16
+
+        # Wind
+        wind_str=f"{wx_spd:.0f} mph" if wx_spd is not None else '-- mph'
+        blit(screen,"WIND",f7,CDM,rx+8,ry)
+        blit(screen,f"{wx_dir}  {wind_str}",f8,C,rx+rw-8,ry,'tr')
+        ry+=14
+
+        hrule(screen,rx,ry,rw); ry+=6
+
+        # Sunrise / Sunset
+        blit(screen,"SUNRISE",f7,CDM,rx+8,ry)
+        blit(screen,"SUNSET",f7,CDM,rx+rw-8,ry,'tr')
+        ry+=10
+        blit(screen,f"↑ {wx_rise}",f9b,CWRN,rx+8,ry)
+        blit(screen,f"{wx_set} ↓",f9b,CDM,rx+rw-8,ry,'tr')
+        ry+=16; hrule(screen,rx,ry,rw); ry+=6
+
         # Network traffic graph
         blit(screen,"NETWORK TRAFFIC",f8,CDM,rx+8,ry)
         blit(screen,"UP / DOWN, MB/S",f7,CDM,rx+rw-8,ry,'tr')
@@ -864,7 +1069,7 @@ def main():
         blit(screen,f"{fmt(s.get('net_sent',0))} OUT, {fmt(s.get('net_recv',0))} IN",
              f7,C,rx+rw-8,ry,'tr')
         ry+=10
-        gh=90; gr2=pygame.Rect(rx+4,ry,rw-8,gh)
+        gh=60; gr2=pygame.Rect(rx+4,ry,rw-8,gh)
         pygame.draw.rect(screen,BG3,gr2)
         pygame.draw.rect(screen,CBRD,gr2,1)
         mid=ry+gh//2; hrule(screen,rx+4,mid,rw-8,(30,60,60))
@@ -877,7 +1082,7 @@ def main():
         ry+=gh+6
 
         # Extra ifaces
-        for in2,ii2 in list(ifaces.items())[:3]:
+        for in2,ii2 in list(ifaces.items())[:2]:
             dot=CGOOD if ii2['up'] else CDAN
             pygame.draw.circle(screen,dot,(rx+10,ry+6),4)
             blit(screen,in2,f8,C,rx+20,ry+1)
@@ -893,7 +1098,8 @@ def main():
         pygame.display.flip()
         clock.tick(FPS)
 
-    term.stop(); stats._run=False; pygame.quit()
+    for t in terms: t.stop()
+    stats._run=False; pygame.quit()
 
 if __name__=='__main__':
     main()
