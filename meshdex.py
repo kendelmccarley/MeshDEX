@@ -719,7 +719,7 @@ def main():
             elif ev.type==pygame.KEYDOWN:
                 kb.press(ev.key)
                 if ev.key==pygame.K_RETURN:
-                    term().write('\n')
+                    term().write('\r')
                     input_buf=''
                 elif ev.key==pygame.K_q and (ev.mod&(pygame.KMOD_ALT|pygame.KMOD_LALT|pygame.KMOD_RALT)):
                     running=False
