@@ -11,8 +11,20 @@ import os, pty, select, signal, socket, math, time, threading, collections, conf
 import psutil
 from datetime import datetime
 from pathlib import Path
+import traceback
 
 os.environ['SDL_AUDIODRIVER'] = 'dummy'  # suppress ALSA errors
+
+_LOG_PATH = os.path.expanduser('~/meshdex.log')
+def _log(msg):
+    ts = time.strftime('%Y-%m-%d %H:%M:%S')
+    line = f"{ts}  {msg}\n"
+    try:
+        with open(_LOG_PATH, 'a') as f:
+            f.write(line)
+    except Exception:
+        pass
+    print(line, end='')
 
 # ─── CONFIG ──────────────────────────────────────────────────────────────────
 W, H    = 1366, 768  # will be overridden by actual display size
@@ -254,7 +266,11 @@ class Terminal:
                     if data:
                         with self._lock:
                             self._stream.feed(data)
-            except OSError: break
+            except OSError:
+                break
+            except Exception as e:
+                _log(f"Terminal._read exception (pid={self._pid}): {e}")
+                break
 
     def write(self,s):
         if self._master:
@@ -272,17 +288,20 @@ class Terminal:
             'brightblue':(85,85,255),'brightmagenta':(255,85,255),
             'brightcyan':(85,255,255),'brightwhite':(255,255,255),
         }
+        def clamp(v): return max(0,min(255,int(v)))
         def parse_color(col,default):
             if col=='default': return default
             if isinstance(col,int):
                 # 256-color
-                if col<16:
+                if 0<=col<16:
                     names=list(ANSI_COLORS.keys())
                     return ANSI_COLORS.get(names[col],default)
                 if col<232:
-                    col-=16; b=col%6; g=(col//6)%6; r=col//36
-                    return (r*51,g*51,b*51)
-                v=(col-232)*10+8; return (v,v,v)
+                    idx=col-16; b=idx%6; g=(idx//6)%6; r=idx//36
+                    return (clamp(r*51),clamp(g*51),clamp(b*51))
+                v=clamp((col-232)*10+8); return (v,v,v)
+            if isinstance(col,tuple) and len(col)==3:
+                return (clamp(col[0]),clamp(col[1]),clamp(col[2]))
             if isinstance(col,str) and col in ANSI_COLORS:
                 return ANSI_COLORS[col]
             return default
@@ -924,30 +943,33 @@ def main():
         term_inner = pygame.Rect(tx+2, HDR_H+2, tw-4, tbot-HDR_H-4)
         term_content = pygame.Rect(term_start_x, term_start_y, exact_w, exact_h)
         pygame.draw.rect(screen, BG3, term_inner)
-        scr,cur_x,cur_y=term().get_screen()
-        blink_on=(frame//6)%2==0
-        for row_i,row in enumerate(scr):
-            ly3=term_start_y+row_i*term_char_h
-            if ly3+term_char_h>term_content.bottom: break
-            cx=term_start_x
-            for col_i,cell in enumerate(row):
-                ch,fg,bg=cell if len(cell)==3 else (cell[0],cell[1],BG3)
-                # Ensure colors are valid RGB tuples
-                if not isinstance(fg,tuple): fg=C
-                if not isinstance(bg,tuple): bg=BG3
-                is_cursor=(row_i==cur_y and col_i==cur_x and blink_on)
-                char_rect=pygame.Rect(cx,ly3,term_char_w,term_char_h)
-                # Clip to this exact cell so wide glyphs can't bleed right
-                screen.set_clip(char_rect)
-                draw_bg=fg if is_cursor else bg
-                if draw_bg!=BG3:
-                    pygame.draw.rect(screen,draw_bg,char_rect)
-                draw_fg=bg if is_cursor else fg
-                safe_ch=ch if (ch and ch.strip() and ch.isprintable()) else ' '
-                if not safe_ch: safe_ch=' '
-                ts=term_font.render(safe_ch,True,draw_fg if draw_fg else C)
-                screen.blit(ts,(cx,ly3))
-                cx+=term_char_w
+        try:
+            scr,cur_x,cur_y=term().get_screen()
+            blink_on=(frame//6)%2==0
+            for row_i,row in enumerate(scr):
+                ly3=term_start_y+row_i*term_char_h
+                if ly3+term_char_h>term_content.bottom: break
+                cx=term_start_x
+                for col_i,cell in enumerate(row):
+                    ch,fg,bg=cell if len(cell)==3 else (cell[0],cell[1],BG3)
+                    # Ensure colors are valid RGB tuples
+                    if not isinstance(fg,tuple): fg=C
+                    if not isinstance(bg,tuple): bg=BG3
+                    is_cursor=(row_i==cur_y and col_i==cur_x and blink_on)
+                    char_rect=pygame.Rect(cx,ly3,term_char_w,term_char_h)
+                    # Clip to this exact cell so wide glyphs can't bleed right
+                    screen.set_clip(char_rect)
+                    draw_bg=fg if is_cursor else bg
+                    if draw_bg!=BG3:
+                        pygame.draw.rect(screen,draw_bg,char_rect)
+                    draw_fg=bg if is_cursor else fg
+                    safe_ch=ch if (ch and ch.strip() and ch.isprintable()) else ' '
+                    if not safe_ch: safe_ch=' '
+                    ts=term_font.render(safe_ch,True,draw_fg if draw_fg else C)
+                    screen.blit(ts,(cx,ly3))
+                    cx+=term_char_w
+        except Exception as e:
+            _log(f"terminal render exception frame={frame} tab={active_tab}: {e}\n{traceback.format_exc()}")
 
         screen.set_clip(None)  # remove clip
         blit(screen,now.strftime("%a. %d %b %Y %H:%M:%S"),f8,CDM,tx+tw-8,tbot-16,'tr')
