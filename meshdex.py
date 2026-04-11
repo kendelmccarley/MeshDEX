@@ -1128,4 +1128,8 @@ def main():
     stats._run=False; pygame.quit()
 
 if __name__=='__main__':
-    main()
+    try:
+        main()
+    except Exception as e:
+        _log(f"FATAL: {e}\n{traceback.format_exc()}")
+        raise
