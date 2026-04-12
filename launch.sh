@@ -18,4 +18,9 @@ if [ -z "$DISPLAY" ]; then
     export DISPLAY=:0
 fi
 
-exec python3 "$SCRIPT_DIR/meshdex.py" "$@"
+while true; do
+    python3 "$SCRIPT_DIR/meshdex.py" "$@"
+    EXIT=$?
+    echo "$(date '+%Y-%m-%d %H:%M:%S')  meshdex.py exited (code $EXIT), restarting in 3s..." >> ~/meshdex.log
+    sleep 3
+done

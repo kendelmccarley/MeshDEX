@@ -330,8 +330,26 @@ class Terminal:
     def stop(self):
         self._run=False
         if self._pid:
+            # Kill the session-leader shell AND all its descendants (e.g. MeshTTY).
+            # The shell puts each foreground job in its own process group (job
+            # control), so killing only self._pid leaves child processes alive.
+            # psutil.children(recursive=True) reaches the full subtree.
+            try:
+                parent=psutil.Process(self._pid)
+                for child in parent.children(recursive=True):
+                    try: child.send_signal(signal.SIGTERM)
+                    except psutil.NoSuchProcess: pass
+            except psutil.NoSuchProcess: pass
+            except Exception: pass
             try: os.kill(self._pid,signal.SIGTERM)
             except: pass
+        # Closing the master PTY fd delivers SIGHUP to the foreground process
+        # group of the slave side — belt-and-suspenders in case SIGTERM was
+        # missed or caught.
+        if self._master is not None:
+            try: os.close(self._master)
+            except: pass
+            self._master=None
 
 # ─── FILESYSTEM ──────────────────────────────────────────────────────────────
 class FS:
